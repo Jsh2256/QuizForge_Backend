@@ -1,0 +1,230 @@
+{
+  "Comment": "Lecture Processing Workflow",
+  "StartAt": "StartTranscription",
+  "States": {
+    "StartTranscription": {
+      "Type": "Task", 
+      "Resource": "arn:aws:lambda:${self:provider.region}:${aws:accountId}:function:${self:service}-${self:provider.stage}-transcribeFunction",
+      "ResultPath": "$.transcriptionDetails",
+      "Next": "UpdateToTranscribing",
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "HandleTranscribeError"
+      }]
+    },
+    "UpdateToTranscribing": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${self:provider.region}:${aws:accountId}:function:${self:service}-${self:provider.stage}-updateStatusFunction",
+      "Parameters": {
+        "lectureId.$": "$.lectureId",
+        "status": "transcribing"
+      },
+      "ResultPath": "$.updateResult",
+      "Next": "CheckTranscriptionStatus"
+    },
+    "CheckTranscriptionStatus": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${self:provider.region}:${aws:accountId}:function:${self:service}-${self:provider.stage}-checkTranscriptionFunction",
+      "Parameters": {
+        "lectureId.$": "$.lectureId",
+        "transcriptionJobName.$": "$.transcriptionDetails.transcriptionJobName"
+      },
+      "ResultPath": "$.checkResult",
+      "Next": "EvaluateTranscriptionStatus" 
+    },
+    "EvaluateTranscriptionStatus": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.checkResult.status",
+          "StringEquals": "transcribe_completed",
+          "Next": "UpdateTranscribeCompleted"
+        },
+        {
+          "Variable": "$.checkResult.status", 
+          "StringEquals": "transcribe_failed",
+          "Next": "HandleTranscribeError"
+        },
+        {
+          "Variable": "$.checkResult.status",
+          "StringEquals": "transcribing",
+          "Next": "WaitForTranscription"
+        }
+      ]
+    },
+    "WaitForTranscription": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "CheckTranscriptionStatus"
+    },
+    "UpdateTranscribeCompleted": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${self:provider.region}:${aws:accountId}:function:${self:service}-${self:provider.stage}-updateStatusFunction",
+      "Parameters": {
+        "lectureId.$": "$.lectureId",
+        "status": "transcribe_completed"
+      },
+      "ResultPath": "$.updateResult",
+      "Next": "StartComprehend"
+    },
+    "HandleTranscribeError": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${self:provider.region}:${aws:accountId}:function:${self:service}-${self:provider.stage}-updateStatusFunction",
+      "Parameters": {
+        "lectureId.$": "$.lectureId",
+        "status": "transcribe_failed",
+        "error.$": "$.error"
+      },
+      "ResultPath": "$.updateResult",
+      "End": true
+    },
+    "StartComprehend": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${self:provider.region}:${aws:accountId}:function:${self:service}-${self:provider.stage}-comprehendFunction",
+      "ResultPath": "$.comprehendDetails",
+      "Next": "UpdateToAnalyzing",
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "HandleComprehendError"
+      }]
+    },
+    "UpdateToAnalyzing": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${self:provider.region}:${aws:accountId}:function:${self:service}-${self:provider.stage}-updateStatusFunction",
+      "Parameters": {
+        "lectureId.$": "$.lectureId",
+        "status": "analyzing"
+      },
+      "ResultPath": "$.updateResult",
+      "Next": "CheckComprehendStatus"
+    },
+    "CheckComprehendStatus": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${self:provider.region}:${aws:accountId}:function:${self:service}-${self:provider.stage}-checkComprehendFunction",
+      "Next": "EvaluateComprehendStatus",
+      "Parameters": {
+        "lectureId.$": "$.lectureId"
+      }
+    },
+    "EvaluateComprehendStatus": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.status",
+          "StringEquals": "analyze_completed",
+          "Next": "UpdateComprehendCompleted"
+        },
+        {
+          "Variable": "$.status",
+          "StringEquals": "analyze_failed",
+          "Next": "HandleComprehendError"
+        },
+        {
+          "Variable": "$.status",
+          "StringEquals": "analyzing",
+          "Next": "WaitForComprehend"
+        }
+      ]
+    },
+    "WaitForComprehend": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "CheckComprehendStatus"
+    },
+    "UpdateComprehendCompleted": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${self:provider.region}:${aws:accountId}:function:${self:service}-${self:provider.stage}-updateStatusFunction",
+      "Parameters": {
+        "lectureId.$": "$.lectureId",
+        "status": "analyze_completed"
+      },
+      "ResultPath": "$.updateResult",
+      "Next": "StartBedrock"
+    },
+    "HandleComprehendError": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${self:provider.region}:${aws:accountId}:function:${self:service}-${self:provider.stage}-updateStatusFunction",
+      "Parameters": {
+        "lectureId.$": "$.lectureId",
+        "status": "analyze_failed",
+        "error.$": "$.error"
+      },
+      "ResultPath": "$.updateResult",
+      "End": true
+    },
+    "StartBedrock": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${self:provider.region}:${aws:accountId}:function:${self:service}-${self:provider.stage}-bedrockFunction",
+      "ResultPath": "$.bedrockDetails",
+      "Next": "UpdateToGeneratingQuestions",
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "HandleBedrockError"
+      }]
+    },
+    "UpdateToGeneratingQuestions": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${self:provider.region}:${aws:accountId}:function:${self:service}-${self:provider.stage}-updateStatusFunction",
+      "Parameters": {
+        "lectureId.$": "$.lectureId",
+        "status": "generating_questions"
+      },
+      "ResultPath": "$.updateResult",
+      "Next": "CheckBedrockStatus"
+    },
+    "CheckBedrockStatus": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${self:provider.region}:${aws:accountId}:function:${self:service}-${self:provider.stage}-checkBedrockFunction",
+      "Next": "EvaluateBedrockStatus",
+      "Parameters": {
+        "lectureId.$": "$.lectureId"
+      }
+    },
+    "EvaluateBedrockStatus": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.status",
+          "StringEquals": "questions_completed",
+          "Next": "FinalizeWorkflow"
+        },
+        {
+          "Variable": "$.status",
+          "StringEquals": "questions_failed",
+          "Next": "HandleBedrockError"
+        },
+        {
+          "Variable": "$.status",
+          "StringEquals": "generating_questions",
+          "Next": "WaitForBedrock"
+        }
+      ]
+    },
+    "WaitForBedrock": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "CheckBedrockStatus"
+    },
+    "HandleBedrockError": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${self:provider.region}:${aws:accountId}:function:${self:service}-${self:provider.stage}-updateStatusFunction",
+      "Parameters": {
+        "lectureId.$": "$.lectureId",
+        "status": "questions_failed",
+        "error.$": "$.error"
+      },
+      "ResultPath": "$.updateResult",
+      "End": true
+    },
+    "FinalizeWorkflow": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${self:provider.region}:${aws:accountId}:function:${self:service}-${self:provider.stage}-updateStatusFunction",
+      "Parameters": {
+        "lectureId.$": "$.lectureId",
+        "status": "completed"
+      },
+      "ResultPath": "$.updateResult",
+      "End": true
+    }
+  }
+}

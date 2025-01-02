@@ -1,0 +1,408 @@
+service: study-app-serverless
+
+plugins:
+  - serverless-offline
+  - serverless-step-functions
+  - serverless-domain-manager
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'us-east-1'}
+  role: arn:aws:iam::${aws:accountId}:role/lambdastudyapp
+  environment:
+    PORT: ${ssm:/study-app/${self:provider.stage}/PORT}
+    JWT_SECRET: ${ssm:/study-app/${self:provider.stage}/JWT_SECRET}
+    STATE_MACHINE_ARN: arn:aws:states:${self:provider.region}:${aws:accountId}:stateMachine:LectureProcessing-${self:provider.stage}
+    AWS_ACCOUNT_ID: ${aws:accountId}
+    AWS_S3_BUCKET: ${self:custom.s3Buckets.${self:provider.region}}
+
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - s3:GetObject
+            - s3:PutObject
+            - s3:DeleteObject
+            - s3:ListBucket
+          Resource:
+            - arn:aws:s3:::${self:custom.s3Buckets.${self:provider.region}}/*
+        - Effect: Allow
+          Action:
+            - dynamodb:Query
+            - dynamodb:Scan
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+            - dynamodb:DeleteItem
+          Resource:
+            - arn:aws:dynamodb:${self:provider.region}:${aws:accountId}:table/*
+            - arn:aws:dynamodb:${self:provider.region}:${aws:accountId}:table/*/index/*
+        - Effect: Allow
+          Action:
+            - lambda:InvokeFunction
+          Resource:
+            - arn:aws:lambda:${self:provider.region}:${aws:accountId}:function:${self:service}-${self:provider.stage}-*
+        - Effect: Allow
+          Action:
+            - states:StartExecution
+            - states:DescribeExecution
+            - states:StopExecution
+          Resource:
+            - arn:aws:states:${self:provider.region}:${aws:accountId}:stateMachine:LectureProcessing-${self:provider.stage}
+            - arn:aws:states:${self:provider.region}:${aws:accountId}:execution:LectureProcessing-${self:provider.stage}:*
+        - Effect: Allow
+          Action:
+            - transcribe:StartTranscriptionJob
+            - transcribe:GetTranscriptionJob
+            - comprehend:DetectDominantLanguage
+            - comprehend:DetectEntities
+            - comprehend:DetectKeyPhrases
+            - bedrock:InvokeModel
+          Resource: "*"
+        - Effect: Allow
+          Action:
+            - es:ESHttpGet
+            - es:ESHttpPost
+            - es:ESHttpPut
+            - es:ESHttpDelete
+          Resource:
+            - arn:aws:es:${self:provider.region}:${aws:accountId}:domain/lecture-questions/*
+
+stepFunctions:
+  stateMachines:
+    lectureProcessing:
+      name: LectureProcessing-${self:provider.stage}
+      definition: ${file(./statemachine/lecture-processing.json)}
+      role: !GetAtt StatesExecutionRole.Arn
+      dependsOn: StatesExecutionRole
+
+package:
+  patterns:
+    - 'node_modules/**'
+    - 'src/**'
+    - '!.git/**'
+    - '!.env'
+    - '!**/*.test.js'
+
+
+custom:
+  cors: &corsSettings
+    origin: ${ssm:/study-app/${self:provider.stage}/CORS_ORIGIN}
+    headers:
+      - Content-Type
+      - X-Amz-Date
+      - Authorization
+      - X-Api-Key
+      - X-Amz-Security-Token
+      - X-Amz-User-Agent
+    allowCredentials: true
+    maxAge: 300
+
+  certificates:
+    us-east-1: ${ssm:/study-app/${self:provider.stage}/CERTIFICATE_ARN_US}
+    ap-northeast-2: ${ssm:/study-app/${self:provider.stage}/CERTIFICATE_ARN_AP}
+
+  customDomain:
+    domainName: ${ssm:/study-app/${self:provider.stage}/API_DOMAIN}
+    basePath: ''
+    stage: ${self:provider.stage}
+    createRoute53Record: true
+    endpointType: 'REGIONAL'
+    securityPolicy: tls_1_2
+    apiType: rest
+    certificateArn: ${self:custom.certificates.${self:provider.region}}
+    hostedZoneId: ${ssm:/study-app/${self:provider.stage}/HOSTED_ZONE_ID}
+
+  s3Buckets:
+    us-east-1: ${ssm:/study-app/${self:provider.stage}/S3_BUCKET_US}
+    ap-northeast-2: ${ssm:/study-app/${self:provider.stage}/S3_BUCKET_AP}
+
+functions:
+  # Authorizer Function
+  authorizer:
+    handler: src/middleware/authorizer.handler
+
+  # Auth Functions
+  register:
+    handler: src/handlers/auth/register.handler
+    events:
+      - http:
+          path: /auth/register
+          method: post
+          cors: *corsSettings
+
+  login:
+    handler: src/handlers/auth/login.handler
+    events:
+      - http:
+          path: /auth/login
+          method: post
+          cors: *corsSettings
+
+  # Lecture Functions - Basic CRUD
+  uploadLecture:
+    handler: src/handlers/lectures/upload.handler
+    events:
+      - http:
+          path: /lectures
+          method: post
+          cors: *corsSettings
+          authorizer:
+            name: authorizer
+            type: request
+
+  getLectureStatus:
+    handler: src/handlers/lectures/getStatus.handler
+    events:
+      - http:
+          path: /lectures/{lectureId}
+          method: get
+          cors: *corsSettings
+          authorizer:
+            name: authorizer
+            type: request
+
+  getUserLectures:
+    handler: src/handlers/lectures/getUserLectures.handler
+    events:
+      - http:
+          path: /lectures/user
+          method: get
+          cors: *corsSettings
+          authorizer:
+            name: authorizer
+            type: request
+
+  deleteLecture:
+    handler: src/handlers/lectures/delete.handler
+    events:
+      - http:
+          path: /lectures/{lectureId}
+          method: delete
+          cors: *corsSettings
+          authorizer:
+            name: authorizer
+            type: request
+
+  # Step Functions Workflow Functions
+  transcribeFunction:
+    handler: src/handlers/workflow/transcribe.handler
+    timeout: 30
+
+  checkTranscriptionFunction:
+    handler: src/handlers/workflow/checkTranscription.handler
+    timeout: 30
+
+  comprehendFunction:
+    handler: src/handlers/workflow/comprehend.handler
+    timeout: 60
+
+  checkComprehendFunction:
+    handler: src/handlers/workflow/checkComprehend.handler
+    timeout: 30
+
+  bedrockFunction:
+    handler: src/handlers/workflow/bedrock.handler
+    timeout: 300
+
+  checkBedrockFunction:
+    handler: src/handlers/workflow/checkBedrock.handler
+    timeout: 120
+
+  updateStatusFunction:
+    handler: src/handlers/workflow/updateStatus.handler
+    timeout: 10
+
+  # Result Retrieval Functions
+  getTranscriptionResult:
+    handler: src/handlers/transcribe/getTranscribeResult.handler
+    events:
+      - http:
+          path: /lectures/{lectureId}/transcription/result
+          method: get
+          cors: *corsSettings
+          authorizer:
+            name: authorizer
+            type: request
+
+  getAnalysis:
+    handler: src/handlers/analysis/getAnalysis.handler
+    events:
+      - http:
+          path: /lectures/{lectureId}/analysis
+          method: get
+          cors: *corsSettings
+          authorizer:
+            name: authorizer
+            type: request
+
+  getLectureQuestions:
+    handler: src/handlers/questions/getQuestions.handler
+    events:
+      - http:
+          path: /lectures/{lectureId}/questions
+          method: get
+          cors: *corsSettings
+          authorizer:
+            name: authorizer
+            type: request
+
+  # Workflow Trigger
+  startWorkflow:
+    handler: src/handlers/workflow/start.handler
+    events:
+      - http:
+          path: /lectures/{lectureId}/process
+          method: post
+          cors: *corsSettings
+          authorizer:
+            name: authorizer
+            type: request
+
+  # Posts Functions
+  createPost:
+    handler: src/handlers/posts/create.handler
+    events:
+      - http:
+          path: /posts
+          method: post
+          cors: *corsSettings
+          authorizer:
+            name: authorizer
+            type: request
+
+  getPosts:
+    handler: src/handlers/posts/list.handler
+    events:
+      - http:
+          path: /posts
+          method: get
+          cors: *corsSettings
+
+  getPostsByLecture:
+    handler: src/handlers/posts/getByLecture.handler
+    events:
+      - http:
+          path: /lectures/{lectureId}/posts
+          method: get
+          cors: *corsSettings
+          authorizer:
+            name: authorizer
+            type: request
+
+  getPost:
+    handler: src/handlers/posts/get.handler
+    events:
+      - http:
+          path: /posts/{postId}
+          method: get
+          cors: *corsSettings
+
+  updatePost:
+    handler: src/handlers/posts/update.handler
+    events:
+      - http:
+          path: /posts/{postId}
+          method: put
+          cors: *corsSettings
+          authorizer:
+            name: authorizer
+            type: request
+
+  deletePost:
+    handler: src/handlers/posts/delete.handler
+    events:
+      - http:
+          path: /posts/{postId}
+          method: delete
+          cors: *corsSettings
+          authorizer:
+            name: authorizer
+            type: request
+
+  addComment:
+    handler: src/handlers/posts/addComment.handler
+    events:
+      - http:
+          path: /posts/{postId}/comments
+          method: post
+          cors: *corsSettings
+          authorizer:
+            name: authorizer
+            type: request
+
+  toggleLike:
+    handler: src/handlers/posts/toggleLike.handler
+    events:
+      - http:
+          path: /posts/{postId}/like
+          method: post
+          cors: *corsSettings
+          authorizer:
+            name: authorizer
+            type: request
+
+resources:
+  Resources:
+    GatewayResponseDefault4XX:
+      Type: 'AWS::ApiGateway::GatewayResponse'
+      Properties:
+        ResponseParameters:
+          gatewayresponse.header.Access-Control-Allow-Origin: ${ssm:/study-app/${self:provider.stage}/CORS_ORIGIN}
+          gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,X-Amz-User-Agent'"
+          gatewayresponse.header.Access-Control-Allow-Methods: "'GET,OPTIONS,POST,PUT,DELETE'"
+        ResponseType: DEFAULT_4XX
+        RestApiId:
+          Ref: 'ApiGatewayRestApi'
+        
+    GatewayResponseDefault5XX:
+      Type: 'AWS::ApiGateway::GatewayResponse'
+      Properties:
+        ResponseParameters:
+          gatewayresponse.header.Access-Control-Allow-Origin: ${ssm:/study-app/${self:provider.stage}/CORS_ORIGIN}
+          gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,X-Amz-User-Agent'"
+          gatewayresponse.header.Access-Control-Allow-Methods: "'GET,OPTIONS,POST,PUT,DELETE'"
+        ResponseType: DEFAULT_5XX
+        RestApiId:
+          Ref: 'ApiGatewayRestApi'
+
+    LectureProcessingLogGroup:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        LogGroupName: /aws/vendedlogs/states/LectureProcessing-${self:provider.stage}
+        RetentionInDays: 14
+
+    StatesExecutionRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: states.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: StatesExecutionPolicy
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - lambda:InvokeFunction
+                  Resource:
+                    - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${self:service}-${self:provider.stage}-*
+                - Effect: Allow
+                  Action:
+                    - logs:CreateLogDelivery
+                    - logs:GetLogDelivery
+                    - logs:UpdateLogDelivery
+                    - logs:DeleteLogDelivery
+                    - logs:ListLogDeliveries
+                    - logs:PutResourcePolicy
+                    - logs:DescribeResourcePolicies
+                    - logs:DescribeLogGroups
+                  Resource: "*"
