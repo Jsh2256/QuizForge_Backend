@@ -75,6 +75,7 @@ sls create_domain --region [새로운-리전] --stage prod
 ```
 
 ## 🛠 인프라 구성
+![Uploading quiz-forge.svg…]()
 
 ### DynamoDB 글로벌 테이블
 
