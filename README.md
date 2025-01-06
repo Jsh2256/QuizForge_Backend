@@ -62,9 +62,7 @@ sls deploy --region ap-southeast-1 --stage prod
 sls deploy --region ap-northeast-1 --stage prod
 ```
 
-### 도메인 설정
-
-![quiz-forge](https://github.com/user-attachments/assets/c156bbc9-abe3-45d8-86a7-8cc4b6f2aafc)﻿
+### 도메인 설정﻿
 
 각 리전별 Custom Domain 설정:
 ```bash
@@ -77,7 +75,7 @@ sls create_domain --region [새로운-리전] --stage prod
 ```
 
 ## 🛠 인프라 구성
-
+![quiz-forge](https://github.com/user-attachments/assets/c156bbc9-abe3-45d8-86a7-8cc4b6f2aafc)
 
 ### DynamoDB 글로벌 테이블
 
